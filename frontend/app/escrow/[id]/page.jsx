@@ -23,6 +23,8 @@
 import { useState, useEffect } from 'react';
 import { useEscrow } from '../../../hooks/useEscrow';
 import { useRelativeTime } from '../../../hooks/useRelativeTime';
+import { useWallet } from '../../../hooks/useWallet';
+import { useToast } from '../../../contexts/ToastContext';
 import MilestoneList from '../../../components/escrow/MilestoneList';
 import DisputeModal from '../../../components/escrow/DisputeModal';
 import CancelEscrowModal from '../../../components/escrow/CancelEscrowModal';
@@ -32,6 +34,12 @@ import ReputationBadge from '../../../components/ui/ReputationBadge';
 import CurrencyAmount from '../../../components/ui/CurrencyAmount';
 import TransactionHash from '../../../components/ui/TransactionHash';
 import Avatar from '../../../components/ui/Avatar';
+import {
+  buildApproveMilestoneTx,
+  buildSubmitMilestoneTx,
+  buildRaiseDisputeTx,
+  broadcastTransaction,
+} from '../../../lib/stellar';
 
 // Fallback data used while the API integration (Issue #34) is pending.
 const PLACEHOLDER_ESCROW = {
@@ -77,9 +85,12 @@ export default function EscrowDetailPage({ params }) {
   const [isCancelOpen, setCancelOpen] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isActionLoading, setIsActionLoading] = useState(false);
 
   const { escrow: fetchedEscrow, isLoading, mutate } = useEscrow(id);
+  const { address, signTx } = useWallet();
   const relativeTime = useRelativeTime(lastRefreshed);
+  const { showToast } = useToast();
 
   // Use fetched data when available, fall back to placeholder during development.
   const escrow = fetchedEscrow ?? PLACEHOLDER_ESCROW;
@@ -105,35 +116,88 @@ export default function EscrowDetailPage({ params }) {
     }
   };
 
-  // TODO (contributor): derive from connected wallet address
-  const connectedRole = 'client'; // "client" | "freelancer" | "observer"
+  // Derive connected role from wallet address
+  const connectedRole = address
+    ? address === escrow.clientAddress
+      ? 'client'
+      : address === escrow.freelancerAddress
+        ? 'freelancer'
+        : 'observer'
+    : 'observer';
 
   const handleApproveMilestone = async (milestoneId) => {
-    // TODO (contributor — Issue #34):
-    // 1. Build approve_milestone Soroban tx
-    // 2. Sign with Freighter
-    // 3. Broadcast
-    // 4. Mutate SWR cache
-    console.log('TODO: approve milestone', milestoneId);
+    setIsActionLoading(true);
+    try {
+      if (!address) throw new Error('Please connect your wallet first');
+
+      const unsignedXdr = await buildApproveMilestoneTx({
+        sourceAddress: address,
+        escrowId: BigInt(id).toString(),
+        milestoneId: Number(milestoneId),
+      });
+
+      const signedXdr = await signTx(unsignedXdr);
+      await broadcastTransaction(signedXdr);
+
+      showToast('Milestone approved', 'success');
+      await mutate();
+    } catch (err) {
+      showToast(err.message || 'Failed to approve milestone', 'error');
+    } finally {
+      setIsActionLoading(false);
+    }
   };
 
   const handleSubmitMilestone = async (milestoneId) => {
-    // TODO (contributor — Issue #34)
-    console.log('TODO: submit milestone', milestoneId);
+    setIsActionLoading(true);
+    try {
+      if (!address) throw new Error('Please connect your wallet first');
+
+      const unsignedXdr = await buildSubmitMilestoneTx({
+        sourceAddress: address,
+        escrowId: BigInt(id).toString(),
+        milestoneId: Number(milestoneId),
+      });
+
+      const signedXdr = await signTx(unsignedXdr);
+      await broadcastTransaction(signedXdr);
+
+      showToast('Milestone submitted', 'success');
+      await mutate();
+    } catch (err) {
+      showToast(err.message || 'Failed to submit milestone', 'error');
+    } finally {
+      setIsActionLoading(false);
+    }
   };
 
   const handleRejectMilestone = async (milestoneId) => {
-    // TODO (contributor — Issue #34)
-    console.log('TODO: reject milestone', milestoneId);
+    setIsActionLoading(true);
+    try {
+      if (!address) throw new Error('Please connect your wallet first');
+
+      // TODO: Implement reject_milestone if not already in contract
+      showToast('Milestone rejection not yet implemented', 'warning');
+    } catch (err) {
+      showToast(err.message || 'Failed to reject milestone', 'error');
+    } finally {
+      setIsActionLoading(false);
+    }
   };
 
   const handleCancelEscrow = async () => {
-    // TODO (contributor — Issue #34):
-    // 1. Build cancel_escrow Soroban tx
-    // 2. Sign with Freighter
-    // 3. Broadcast
-    // 4. Redirect to dashboard
-    console.log('TODO: cancel escrow', id);
+    setIsActionLoading(true);
+    try {
+      if (!address) throw new Error('Please connect your wallet first');
+
+      // TODO: Implement cancel_escrow if not already in contract
+      showToast('Escrow cancellation not yet implemented', 'warning');
+      setCancelOpen(false);
+    } catch (err) {
+      showToast(err.message || 'Failed to cancel escrow', 'error');
+    } finally {
+      setIsActionLoading(false);
+    }
   };
 
   if (isLoading && !fetchedEscrow) {
@@ -154,7 +218,10 @@ export default function EscrowDetailPage({ params }) {
             <Badge status={escrow.status} />
           </div>
           <p className="text-gray-400 text-sm">Escrow #{id}</p>
-          <StellarExpertLink txHash={escrow.txHash} network={process.env.NEXT_PUBLIC_STELLAR_NETWORK} />
+          <StellarExpertLink
+            txHash={escrow.txHash}
+            network={process.env.NEXT_PUBLIC_STELLAR_NETWORK}
+          />
         </div>
         <div className="flex gap-2 flex-shrink-0">
           {escrow.status === 'Active' && (
@@ -234,7 +301,12 @@ export default function EscrowDetailPage({ params }) {
       </section>
 
       {/* Dispute Modal */}
-      <DisputeModal isOpen={isDisputeOpen} onClose={() => setDisputeOpen(false)} escrowId={id} />
+      <DisputeModal 
+        isOpen={isDisputeOpen} 
+        onClose={() => setDisputeOpen(false)} 
+        escrowId={id}
+        onSuccess={async () => await mutate()}
+      />
 
       {/* Cancel Escrow Modal */}
       <CancelEscrowModal
@@ -251,10 +323,11 @@ function InfoCell({ label, value, isAmount = false }) {
   return (
     <div className="card py-3">
       <p className="text-xs text-gray-500 uppercase tracking-wider">{label}</p>
-      {isAmount
-        ? <CurrencyAmount amount={value} showUsdc size="md" className="mt-1" />
-        : <p className="text-white font-semibold mt-1">{value}</p>
-      }
+      {isAmount ? (
+        <CurrencyAmount amount={value} showUsdc size="md" className="mt-1" />
+      ) : (
+        <p className="text-white font-semibold mt-1">{value}</p>
+      )}
     </div>
   );
 }
@@ -299,8 +372,19 @@ function StellarExpertLink({ txHash, network }) {
     >
       View on Stellar Expert
       {/* External link icon */}
-      <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="w-3.5 h-3.5"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+        />
       </svg>
     </a>
   );
